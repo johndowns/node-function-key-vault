@@ -1,6 +1,20 @@
+// Parameters.
 param location string = resourceGroup().location
-param runtime string = 'node'
-param applicationName string = 'app-${uniqueString(resourceGroup().id)}'
+param vnetName string = 'MyVNet'
+param subnetName string = 'MySubnet'
+param functionsAppRuntime string = 'node'
+param functionsAppName string = 'app-${uniqueString(resourceGroup().id)}'
+param functionsAppServicePlanTier string {
+  default: 'EP1'
+  allowed: [
+    'EP1'
+    'EP2'
+    'EP3'
+  ]
+  metadata: {
+    description: 'This must be an elastic premium plan since this sample shows how to use Key Vault network restrictions, which requires VNet integration on the function app.'
+  }
+}
 param storageAccountName string = 'fn${uniqueString(resourceGroup().id)}'
 param storageAccountType string {
   default: 'Standard_LRS'
@@ -8,16 +22,6 @@ param storageAccountType string {
     'Standard_LRS'
     'Standard_GRS'
     'Standard_RAGRS'
-  ]
-}
-param vnetName string = 'MyVNet'
-param subnetName string = 'MySubnet'
-param serverFarmTier string {
-  default: 'EP1'
-  allowed: [
-    'EP1'
-    'EP2'
-    'EP3'
   ]
 }
 param keyVaultSku string = 'Standard'
@@ -28,9 +32,11 @@ param secretValue string {
   default: 'my-secret-value'
 }
 
+// Variables.
 var vnetAddressPrefix = '10.0.0.0/16'
 var subnetAddressPrefix = '10.0.0.0/24'
 
+// VNet and subnet.
 resource virtualNetwork 'Microsoft.Network/virtualNetworks@2020-06-01' = {
   name: vnetName
   location: location
@@ -64,6 +70,7 @@ resource virtualNetwork 'Microsoft.Network/virtualNetworks@2020-06-01' = {
   }
 }
 
+// Storage account for the function app to store its metadata.
 resource storageAccount 'Microsoft.Storage/storageAccounts@2020-08-01-preview' = {
   name: storageAccountName
   location: location
@@ -73,8 +80,9 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2020-08-01-preview' =
   kind: 'StorageV2'
 }
 
-resource appInsights 'Microsoft.Insights/components@2018-05-01-preview' = {
-  name: applicationName
+// Application Insights
+resource applicationInsights 'Microsoft.Insights/components@2018-05-01-preview' = {
+  name: functionsAppName
   location: location
   kind: 'web'
   properties: {
@@ -82,11 +90,12 @@ resource appInsights 'Microsoft.Insights/components@2018-05-01-preview' = {
   }
 }
 
+// Function app hosting plan. This must be an elastic premium plan.
 resource serverFarm 'Microsoft.Web/serverfarms@2020-06-01' = {
-  name: applicationName
+  name: functionsAppName
   location: location
   sku: {
-    name: serverFarmTier
+    name: functionsAppServicePlanTier
     tier: 'ElasticPremium'
   }
   kind: 'elastic'
@@ -95,48 +104,9 @@ resource serverFarm 'Microsoft.Web/serverfarms@2020-06-01' = {
   }
 }
 
-resource keyVault 'Microsoft.KeyVault/vaults@2019-09-01' = {
-  name: keyVaultName
-  location: location
-  properties: {
-    tenantId: function.identity.tenantId
-    sku: {
-      family: 'A'
-      name: keyVaultSku
-    }
-    accessPolicies: [
-      {
-        tenantId: function.identity.tenantId
-        objectId: function.identity.principalId
-        permissions: {
-          secrets: [
-            'get'
-          ]
-        }
-      }
-    ]
-    networkAcls: {
-      bypass: 'None'
-      defaultAction: 'Deny'
-      virtualNetworkRules: [
-        {
-          id: resourceId('Microsoft.Network/virtualNetworks/subnets', virtualNetwork.name, subnetName)
-        }
-      ]
-    }
-  }
-}
-
-resource secret 'Microsoft.KeyVault/vaults/secrets@2019-09-01' = {
-  name: '${keyVault.name}/${secretName}'
-  location: location
-  properties: {
-    value: secretValue
-  }
-}
-
-resource function 'Microsoft.Web/sites@2020-06-01' = {
-  name: applicationName
+// Azure Functions app.
+resource functionsApp 'Microsoft.Web/sites@2020-06-01' = {
+  name: functionsAppName
   location: location
   kind: 'functionapp'
   identity: {
@@ -148,11 +118,11 @@ resource function 'Microsoft.Web/sites@2020-06-01' = {
       appSettings: [
         {
           name: 'APPINSIGHTS_INSTRUMENTATIONKEY'
-          value: appInsights.properties.InstrumentationKey
+          value: applicationInsights.properties.InstrumentationKey
         }
         {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-          value: 'InstrumentationKey=${appInsights.properties.InstrumentationKey}'
+          value: 'InstrumentationKey=${applicationInsights.properties.InstrumentationKey}'
         }
         {
           name: 'AzureWebJobsStorage'
@@ -164,7 +134,7 @@ resource function 'Microsoft.Web/sites@2020-06-01' = {
         }
         {
           name: 'WEBSITE_CONTENTSHARE'
-          value: toLower(applicationName)
+          value: toLower(functionsAppName)
         }
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'
@@ -172,7 +142,7 @@ resource function 'Microsoft.Web/sites@2020-06-01' = {
         }
         {
           name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: runtime
+          value: functionsAppRuntime
         }
         {
           name: 'WEBSITE_NODE_DEFAULT_VERSION'
@@ -192,9 +162,51 @@ resource function 'Microsoft.Web/sites@2020-06-01' = {
 }
 
 resource networkConfig 'Microsoft.Web/sites/networkConfig@2020-06-01' = {
-  name: '${function.name}/virtualNetwork'
+  name: '${functionsApp.name}/virtualNetwork'
   properties: {
     subnetResourceId: resourceId('Microsoft.Network/virtualNetworks/subnets', virtualNetwork.name, subnetName)
     swiftSupported: true
+  }
+}
+
+// Key vault, with an access policy to allow the function app to read secrets, and a network ACL to only allow requests from the subnet used by the function app.
+resource keyVault 'Microsoft.KeyVault/vaults@2019-09-01' = {
+  name: keyVaultName
+  location: location
+  properties: {
+    tenantId: functionsApp.identity.tenantId
+    sku: {
+      family: 'A'
+      name: keyVaultSku
+    }
+    accessPolicies: [
+      {
+        tenantId: functionsApp.identity.tenantId
+        objectId: functionsApp.identity.principalId
+        permissions: {
+          secrets: [
+            'get'
+          ]
+        }
+      }
+    ]
+    networkAcls: {
+      bypass: 'None'
+      defaultAction: 'Deny'
+      virtualNetworkRules: [
+        {
+          id: resourceId('Microsoft.Network/virtualNetworks/subnets', virtualNetwork.name, subnetName)
+        }
+      ]
+    }
+  }
+}
+
+// Sample secret stored in the key vault.
+resource secret 'Microsoft.KeyVault/vaults/secrets@2019-09-01' = {
+  name: '${keyVault.name}/${secretName}'
+  location: location
+  properties: {
+    value: secretValue
   }
 }
