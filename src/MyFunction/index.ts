@@ -1,6 +1,6 @@
 import { AzureFunction, Context, HttpRequest } from "@azure/functions"
-import { ManagedIdentityCredential} from "@azure/identity"
-import {SecretClient} from "@azure/keyvault-secrets"
+import { ManagedIdentityCredential } from "@azure/identity"
+import { SecretClient } from "@azure/keyvault-secrets"
 
 const vaultName = process.env.KeyVaultName; // The name of the key vault. This is specified in the ARM template and is made accessible through an app setting.
 const url = `https://${vaultName}.vault.azure.net`;
